@@ -346,6 +346,8 @@ class CompressedNumberList:
     After that we compress it with zlib. To make it even smaller.
     """
 
+    __slots__ = ("data", "typecode")
+
     def __init__(self, numbers):
         # Make sure to consume iterators only once
         numbers = tuple(numbers)
