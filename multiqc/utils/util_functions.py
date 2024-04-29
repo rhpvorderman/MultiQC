@@ -2,6 +2,7 @@
 import array
 import json
 import logging
+import zlib
 from collections import defaultdict, OrderedDict
 
 import math
@@ -215,8 +216,8 @@ def dump_json(data, filehandle=None, **kwargs):
         """
 
         def default(self, o):
-            if isinstance(o, array.array):
-                return replace_nan(o.tolist())
+            if isinstance(o, CompressedNumberList):
+                return [replace_nan(v) for v in o]
             if callable(o):
                 return None
             return super().default(o)
@@ -303,10 +304,10 @@ def replace_defaultdicts(data):
     return _replace(data)
 
 
-def compress_number_lists_for_json(obj):
+class CompressedNumberList:
     """
-    Take an object that should be JSON and compress all the lists of integer
-    and lists of float as array.array. This saves space and the arrays can
+    Take an iterable object of only numbers and store it as array.array.
+    This saves space and the arrays can
     easily be converted back again, using the dump_json function above.
 
     The technical explanation:
@@ -341,15 +342,39 @@ def compress_number_lists_for_json(obj):
     }
     Using 8-byte machine values rather than Python objects saves thus
     24 bytes per float.
+
+    After that we compress it with zlib. To make it even smaller.
     """
-    if isinstance(obj, (list, tuple)):
+
+    def __init__(self, numbers):
+        # Make sure to consume iterators only once
+        numbers = tuple(numbers)
         try:
-            # Try integer list first, because it does not accept floats.
-            return array.array("q", obj)
+            # Integers can be represented as floats, but not vice versa so
+            # try integers first.
+            arr = array.array["q", numbers]
         except TypeError:
             pass
         try:
-            return array.array("d", obj)
+            arr = array.array["d", numbers]
+        except TypeError:
+            raise TypeError("Object cannot be compressed.")
+        del numbers  # Make sure the tuple is out of scope and garbage collected
+        self.data = zlib.compress(memoryview(arr))
+        self.typecode = arr.typecode
+        del arr
+
+    def __iter__(self):
+        decompressed: bytes = zlib.decompress(self.data)
+        mem_view = memoryview(decompressed).cast(self.typecode)
+        return iter(mem_view)
+
+
+def compress_number_lists_for_json(obj):
+    if isinstance(obj, (list, tuple)):
+        try:
+            # Try integer list first, because it does not accept floats.
+            return CompressedNumberList(obj)
         except TypeError:
             return [compress_number_lists_for_json(v) for v in obj]
     if isinstance(obj, dict):
