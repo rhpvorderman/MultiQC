@@ -2,6 +2,7 @@
 import array
 import json
 import logging
+import tempfile
 from collections import defaultdict, OrderedDict
 
 import math
@@ -67,50 +68,54 @@ def write_data_file(
     if data_format is None:
         data_format = config.data_format
 
-    body = None
+    temporary_tsv = None
     # Some metrics can't be coerced to tab-separated output, test and handle exceptions
     if data_format in ["tsv", "csv"]:
-        sep = "\t" if data_format == "tsv" else ","
-        # Attempt to reshape data to tsv
-        # noinspection PyBroadException
         try:
-            # Get all headers from the data, except if data is a dictionary (i.e. has >1 dimensions)
-            headers = []
-            rows = []
+            with tempfile.NamedTemporaryFile(
+                "wt", encoding="utf-8", errors="ignore", delete_on_close=False
+            ) as temporary_file:
+                temporary_tsv = temporary_file.name
+                sep = "\t" if data_format == "tsv" else ","
+                # Attempt to reshape data to tsv
+                # noinspection PyBroadException
+                # Get all headers from the data, except if data is a dictionary (i.e. has >1 dimensions)
+                headers = []
 
-            for d in data.values() if isinstance(data, dict) else data:
-                if not d or (isinstance(d, list) and isinstance(d[0], dict)):
-                    continue
-                if isinstance(d, dict):
-                    for h in d.keys():
-                        if h not in headers:
-                            headers.append(h)
-            if headers:
-                if sort_cols:
-                    headers = sorted(headers)
-                headers_str = [str(item) for item in headers]
-                if isinstance(data, dict):
-                    # Add Sample header as a first element
-                    headers_str.insert(0, "Sample")
-                rows.append(sep.join(headers_str))
-
-            # The rest of the rows
-            for key, d in sorted(data.items()) if isinstance(data, dict) else enumerate(data):
-                # Make a list starting with the sample name, then each field in order of the header cols
+                for d in data.values() if isinstance(data, dict) else data:
+                    if not d or (isinstance(d, list) and isinstance(d[0], dict)):
+                        continue
+                    if isinstance(d, dict):
+                        for h in d.keys():
+                            if h not in headers:
+                                headers.append(h)
                 if headers:
-                    line = [str(d.get(h, "")) for h in headers]
-                else:
-                    line = [
-                        str(item)
-                        for item in (d.values() if isinstance(d, dict) else (d if isinstance(d, list) else [d]))
-                    ]
-                if isinstance(data, dict):
-                    # Add Sample header as a first element
-                    line.insert(0, str(key))
-                rows.append(sep.join(line))
-            body = "\n".join(rows)
+                    if sort_cols:
+                        headers = sorted(headers)
+                    headers_str = [str(item) for item in headers]
+                    if isinstance(data, dict):
+                        # Add Sample header as a first element
+                        headers_str.insert(0, "Sample")
+                    temporary_file.write(sep.join(headers_str) + "\n")
 
+                # The rest of the rows
+                for key, d in sorted(data.items()) if isinstance(data, dict) else enumerate(data):
+                    # Make a list starting with the sample name, then each field in order of the header cols
+                    if headers:
+                        line = [str(d.get(h, "")) for h in headers]
+                    else:
+                        line = [
+                            str(item)
+                            for item in (d.values() if isinstance(d, dict) else (d if isinstance(d, list) else [d]))
+                        ]
+                    if isinstance(data, dict):
+                        # Add Sample header as a first element
+                        line.insert(0, str(key))
+                    temporary_file.write(sep.join(line) + "\n")
         except Exception as e:
+            if temporary_tsv:
+                os.remove(temporary_tsv)
+                temporary_tsv = None
             if config.development:
                 raise
             data_format = "yaml"
@@ -124,9 +129,9 @@ def write_data_file(
             dump_json(data, f, indent=4, ensure_ascii=False)
         elif data_format == "yaml":
             yaml.dump(replace_defaultdicts(data), f, default_flow_style=False)
-        elif body:
-            # Default - tab separated output
-            print(body.encode("utf-8", "ignore").decode("utf-8"), file=f)
+    if temporary_tsv:
+        # Default - tab separated output
+        shutil.move(temporary_tsv, fpath)
     log.debug(f"Wrote data file {fn}")
 
 
