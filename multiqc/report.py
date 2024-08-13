@@ -324,16 +324,15 @@ class SearchFile:
     def line_iterator(self, max_newlines: Optional[int] = None) -> Iterator[str]:
         if max_newlines is None:
             max_newlines = sys.maxsize
+        number_of_saved_lines = len(self._lines)
 
         # First use all cached lines
-        for count, line in enumerate(self._lines, start=1):
-            if count > max_newlines:
-                return
-            yield line
+        yield from self._lines[:number_of_saved_lines]
+        if max_newlines <= number_of_saved_lines:
+            return
 
         # Then use the block iterator to find the first block that contains
         # new lines
-        number_of_saved_lines = len(self._lines)
         total_count = 0
         block_iterator = self.line_block_iterator(max_newlines)
         for linecount, block in block_iterator:
