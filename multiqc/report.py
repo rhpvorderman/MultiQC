@@ -689,12 +689,12 @@ def search_file(pattern: SearchPattern, f: SearchFile, module_key):
                     match_strs.add(s)
                     if len(match_strs) == len(pattern.contents):  # all strings matched
                         break
-        for line in f.line_iterator(max_newlines=num_lines):
             for p in pattern.contents_re:
-                if p.match(line):
-                    match_re_patterns.add(p)
-                    if len(match_re_patterns) == len(pattern.contents_re):  # all strings matched
-                        break
+                for line in block.splitlines(keepends=True):
+                    if p.match(line):
+                        match_re_patterns.add(p)
+                        if len(match_re_patterns) == len(pattern.contents_re):  # all strings matched
+                            break
     except Exception:
         file_search_stats["skipped_file_contents_search_errors"].add(f.path)
         return False
