@@ -224,6 +224,7 @@ class SearchFile:
         self._filehandle: Optional[TextIO] = None
         self._iterator: Optional[Iterator[Tuple[int, str]]] = None
         self._blocks: List[Tuple[int, str]] = []  # cache of read blocks with line count found in each block
+        self._lines: List[str] = []  # cache of read lines
         self._filesize: Optional[int] = None
 
     @property
@@ -236,7 +237,7 @@ class SearchFile:
                 self._filesize = None
         return self._filesize
 
-    def line_block_iterator(self) -> Iterator[Tuple[int, str]]:
+    def cached_block_iterator(self) -> Iterator[Tuple[int, str]]:
         """
         Optimized file line iterator.
 
@@ -304,12 +305,52 @@ class SearchFile:
         if not self._blocks and config.report_readerrors:
             logger.debug(f"No utf-8 lines were read from the file, skipping {self.path}")
 
-    def line_iterator(self) -> Iterator[Tuple[int, str]]:
-        total_line_count = 0
-        for _line_count, line_block in self.line_block_iterator():
-            for line in line_block.split("\n"):
-                total_line_count += 1
-                yield total_line_count, line
+    @staticmethod
+    def truncate_block(block, newline_count):
+        return "".join(block.splitlines(keepends=True)[:newline_count])
+
+    def line_block_iterator(self, max_newlines: Optional[int] = None) -> Iterator[str]:
+        if max_newlines is None:
+            max_newlines = sys.maxsize
+        total_count = 0
+        for line_count, block in self.cached_block_iterator():
+            if total_count + line_count >= max_newlines:
+                remaining_count = max_newlines - total_count
+                yield remaining_count, self.truncate_block(block, remaining_count)
+                return
+            total_count += line_count
+            yield line_count, block
+
+    def line_iterator(self, max_newlines: Optional[int] = None) -> Iterator[str]:
+        if max_newlines is None:
+            max_newlines = sys.maxsize
+
+        # First use all cached lines
+        for count, line in enumerate(self._lines, start=1):
+            if count > max_newlines:
+                return
+            yield line
+
+        # Then use the block iterator to find the first block that contains
+        # new lines
+        number_of_saved_lines = len(self._lines)
+        total_count = 0
+        block_iterator = self.line_block_iterator(max_newlines)
+        for linecount, block in block_iterator:
+            total_count += linecount
+            if total_count <= number_of_saved_lines:
+                continue
+            lines_to_add = total_count - number_of_saved_lines
+            new_lines = block.splitlines(keepends=True)[-lines_to_add:]
+            for line in new_lines:
+                self._lines.append(line)
+                yield line
+            break
+        # Simpler iteration for the remaining blocks
+        for linecount, block in block_iterator:
+            for line in block.splitlines(keepends=True):
+                self._lines.append(line)
+                yield line
 
     def close(self):
         if self._filehandle:
@@ -643,19 +684,18 @@ def search_file(pattern: SearchPattern, f: SearchFile, module_key):
     match_strs: Set[str] = set()
     match_re_patterns: Set[re.Pattern] = set()
     try:
-        for line_count, line in f.line_iterator():
+        for block in f.line_block_iterator(max_newlines=num_lines):
             for s in pattern.contents:
-                if s in line:
+                if s in block:
                     match_strs.add(s)
                     if len(match_strs) == len(pattern.contents):  # all strings matched
                         break
+        for line in f.line_iterator(max_newlines=num_lines):
             for p in pattern.contents_re:
                 if p.match(line):
                     match_re_patterns.add(p)
                     if len(match_re_patterns) == len(pattern.contents_re):  # all strings matched
                         break
-            if line_count >= num_lines:
-                break
     except Exception:
         file_search_stats["skipped_file_contents_search_errors"].add(f.path)
         return False
